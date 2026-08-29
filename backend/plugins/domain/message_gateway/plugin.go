@@ -136,8 +136,8 @@ func (p *Plugin) Apply(ctx *core.Context) error {
 
 	// 0. Resolve auth service for middleware (via IoC, not direct import)
 	denyAuth := ginutil.AuthUnavailable()
-	var loginMW gin.HandlerFunc = denyAuth
-	var adminMW gin.HandlerFunc = denyAuth
+	loginMW := denyAuth
+	adminMW := denyAuth
 	if authSvc, err := core.Inject[contracts.AuthService](ctx); err == nil && authSvc != nil {
 		if mw, ok := authSvc.RequireAuthMiddleware().(gin.HandlerFunc); ok {
 			loginMW = mw
