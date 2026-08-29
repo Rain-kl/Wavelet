@@ -119,7 +119,79 @@ and `backend/core` concurrently.
 the pinned yardstick.
 **Metric delta**: -25 in one iteration.
 
+## Lesson 9 — iterations 23-24
+**Pattern**: Cross-check every service a plugin's `Apply` reads out of the
+container against what that plugin's `Inject()` declares. `Inject()` is the only
+thing `App.reconcileLocked` gates on, so anything consumed as a *value* at Apply
+time but left undeclared is resolved from a container that may not hold it yet.
+**Why it worked**: It found the run's worst defect, invisible to every
+mechanical gate: `user` declared only `DBService` while capturing
+`contracts.AuthService` to build its route guard, and `cmd/app.go` lists `user`
+before `auth`. Because user's dep set is a strict subset of auth's and it sits
+earlier in the slice, user *always* mounts first — deterministically, not a
+race — so `loginMW` fell back to a `c.Next()` closure and
+`/api/v1/user/{change-password,profile,access-tokens}` mounted unguarded. The
+same lookups in `admin` read a package global that its own `OnDispose` nils, so
+in-flight requests fail open during dispose.
+**Conditions**: Any Cordis plugin whose Apply assigns a contract result to a
+variable used later (middleware, handler closures). Services bound through
+`core.When` late binding are exempt — that is the correct pattern for genuinely
+late deps, so do not blanket-declare everything.
+**Anti-pattern**: Assuming a checked `x, ok :=` assertion is safe. All three
+plugins used the checked form and all three failed *open* — checked syntax,
+unchecked semantics.
+**Metric delta**: 0 across both iterations (kept under the proven-fix gate),
+but this is the run's highest-severity finding. `RouterRegistry` records each
+route's `Handlers`/`Middlewares`, which makes "is this route actually guarded?"
+directly assertable from the route table — the cheapest available oracle for
+security properties here.
+
+## Lesson 10 — iteration 23 review
+**Pattern**: When the remaining metric is dominated by a positional or
+taste-based analyzer, say so and refuse to spend iterations on it.
+**Why it worked**: `funcorder` was 21 of 54 findings (39%) — pure function
+*ordering within a file*. Reordering private helpers to the bottom of a file
+moves the number and changes nothing a reader or the machine cares about, which
+is Lesson 1's "looks productive while shuffling strings" with a different label.
+Skipping it kept the loop honest. Triage also cleared 12 of 13
+`forcetypeassert` (guarded by construction) and 2 of 3 `unparam` (deliberate
+constructor symmetry behind one factory switch).
+**Conditions**: Whenever one linter dominates a shrinking total, break the count
+down per linter *before* picking a hypothesis.
+**Anti-pattern**: Treating a large single-linter share as an easy win. Real
+headroom at this point is ~10 findings, so a plateau in `debt` no longer means a
+stalled loop.
+**Metric delta**: 0 spent, ~21 findings deliberately left in place.
+
+## Lesson 11 — iterations 24-25
+**Pattern**: Run the Guard after every single commit, and confirm which commit a
+proof script is actually reverting against.
+**Why it worked**: Four `staticcheck ST1023` findings from iteration 24 shipped
+straight through `go build ./...` and a green 47-package `go test ./...` —
+neither runs the project linter, so only `checks.sh` section 3 catches them.
+Separately, `prove_fix.sh` reverts to `HEAD^`; appending the iteration-23 log
+commit shifted `HEAD^` to the *fixed* state and reported "PROVE FAILED: tests
+still pass without the fix" on a genuinely load-bearing fix. Re-checking against
+the explicit pre-fix commit (`git checkout <sha> -- <files>`) showed the real
+answer. A false negative here is worse than no proof: it reads like the fix was
+cosmetic.
+**Conditions**: Always. Also note zsh does not word-split unquoted variables, so
+`git checkout $FILES` passes one bogus pathspec and silently reverts nothing —
+the command still exits 0.
+**Anti-pattern**: Batch-verifying at ship time. And any shell loop built on the
+bash word-splitting habit in this environment.
+**Metric delta**: -0, 1 wrong verdict corrected.
+
 ## Standing notes
+- Upstream moves fast in this repo: `origin/main` gained 11 commits mid-run
+  (Cordis config extension point — `ctx.Config().Bind`, `DeclareConfig()`,
+  `core.ConfigGatedPlugin`), which raised measured `debt` 54 -> 64 and
+  `nolint_dirs` 72 -> 73 on its own. Rebase early and re-run the Guard after;
+  a clean rebase does not mean a green one.
+- `cmd.TestNewWaveletAppWithRedisEnabled` needs a live Redis on
+  `127.0.0.1:6379` and fails without one. Pre-existing on `origin/main`, so
+  `tests_passed` 46 vs 47 is environmental, not a regression. Confirm against a
+  scratch `git worktree` of `origin/main` before blaming a change for it.
 - Repo facts: backend module rooted at `backend/`, gofumpt orders a single
   import group as `Wavelet/...` before stdlib (uppercase sorts first); new Go
   files need the Apache license header or `scripts/update_go_license.sh --check`
@@ -128,5 +200,6 @@ the pinned yardstick.
   when only bodies change).
 - Dead suppressions are tracked by the `nolint_dirs` counter; removing one that
   is still needed re-raises the original finding, so the metric self-corrects.
-  24 were removed in iteration 22; 72 remain, each still doing work.
+  24 were removed in iteration 22; 72 remain, each still doing work (73 after
+  the upstream rebase).
 
