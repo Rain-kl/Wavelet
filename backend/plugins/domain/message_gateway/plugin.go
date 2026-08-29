@@ -8,6 +8,7 @@ import (
 	"Wavelet/core"
 	"Wavelet/core/contracts"
 	"Wavelet/core/extpoints"
+	"Wavelet/pkg/ginutil"
 	"Wavelet/pkg/util"
 	"Wavelet/plugins/domain/message_gateway/handler"
 	"Wavelet/plugins/domain/message_gateway/model"
@@ -134,8 +135,9 @@ func (p *Plugin) Apply(ctx *core.Context) error {
 	})
 
 	// 0. Resolve auth service for middleware (via IoC, not direct import)
-	var loginMW gin.HandlerFunc = func(c *gin.Context) { c.Next() }
-	var adminMW gin.HandlerFunc = func(c *gin.Context) { c.Next() }
+	denyAuth := ginutil.AuthUnavailable()
+	var loginMW gin.HandlerFunc = denyAuth
+	var adminMW gin.HandlerFunc = denyAuth
 	if authSvc, err := core.Inject[contracts.AuthService](ctx); err == nil && authSvc != nil {
 		if mw, ok := authSvc.RequireAuthMiddleware().(gin.HandlerFunc); ok {
 			loginMW = mw

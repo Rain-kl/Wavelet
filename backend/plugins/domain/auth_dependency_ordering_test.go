@@ -5,7 +5,10 @@ package domain_test
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +18,7 @@ import (
 	"Wavelet/core"
 	"Wavelet/core/contracts"
 	"Wavelet/core/extpoints"
+	"Wavelet/plugins/domain/admin"
 	"Wavelet/plugins/domain/message_gateway"
 	"Wavelet/plugins/domain/user"
 )
@@ -148,6 +152,68 @@ func TestAuthConsumersDeclareAuthDependency(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Contains(t, tc.deps, want,
 				"%s resolves contracts.AuthService in Apply, so it must declare it in Inject", tc.name)
+		})
+	}
+}
+
+// firstGuard returns the outermost middleware registered for the first route
+// matching method and path prefix — the auth guard the plugin resolved at Apply.
+func firstGuard(t *testing.T, routes []extpoints.RouteDefinition, method, prefix string) gin.HandlerFunc {
+	t.Helper()
+
+	for _, rd := range routes {
+		if rd.Method != method || !strings.HasPrefix(rd.Path, prefix) {
+			continue
+		}
+		for _, candidate := range rd.Middlewares {
+			if mw, ok := candidate.(gin.HandlerFunc); ok {
+				return mw
+			}
+		}
+		for _, candidate := range rd.Handlers {
+			if mw, ok := candidate.(gin.HandlerFunc); ok {
+				return mw
+			}
+		}
+		t.Fatalf("route %s %s has no inspectable guard", method, rd.Path)
+	}
+	t.Fatalf("no route registered for %s %s*", method, prefix)
+	return nil
+}
+
+// TestAuthGuardFailsClosed 回归：鉴权服务无法解析时兜底必须是拒绝。旧实现兜底为
+// c.Next()，所以任何装配缺失——例如 admin 的 OnDispose 调用 service.ResetServices
+// 把全局 authService 置 nil——都会让路由以“已登录”的姿态直达业务处理函数。
+func TestAuthGuardFailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name   string
+		apply  func(*core.Context) error
+		method string
+		prefix string
+	}{
+		{"user", user.New().Apply, http.MethodPost, "/api/v1/user/change-password"},
+		{"message_gateway", message_gateway.New().Apply, http.MethodGet, "/api/v1/message-gateway"},
+		{"admin", admin.New().Apply, http.MethodGet, "/api/v1/admin"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := core.NewContext(context.Background())
+			require.NoError(t, tc.apply(ctx))
+
+			guard := firstGuard(t, ctx.Router().Routes(), tc.method, tc.prefix)
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(tc.method, tc.prefix, nil)
+			guard(c)
+
+			assert.True(t, c.IsAborted(),
+				"%s guard must reject the request when contracts.AuthService is unavailable", tc.name)
+			assert.NotEmpty(t, c.Errors,
+				"%s guard must record why the request was rejected", tc.name)
 		})
 	}
 }

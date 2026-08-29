@@ -8,6 +8,7 @@ import (
 	"Wavelet/core"
 	"Wavelet/core/contracts"
 	"Wavelet/core/extpoints"
+	"Wavelet/pkg/ginutil"
 	"Wavelet/plugins/domain/admin/handler"
 	"Wavelet/plugins/domain/admin/model"
 	"Wavelet/plugins/domain/admin/service"
@@ -142,6 +143,7 @@ func (p *Plugin) Apply(ctx *core.Context) error {
 	})
 
 	// 0a. Dynamic Auth Middlewares
+	denyAuth := ginutil.AuthUnavailable()
 	var loginMW gin.HandlerFunc = func(c *gin.Context) {
 		if authSvc := service.GetAuthService(c.Request.Context()); authSvc != nil {
 			if mw, ok := authSvc.RequireAuthMiddleware().(gin.HandlerFunc); ok {
@@ -149,7 +151,7 @@ func (p *Plugin) Apply(ctx *core.Context) error {
 				return
 			}
 		}
-		c.Next()
+		denyAuth(c)
 	}
 	var adminMW gin.HandlerFunc = func(c *gin.Context) {
 		if authSvc := service.GetAuthService(c.Request.Context()); authSvc != nil {
@@ -158,7 +160,7 @@ func (p *Plugin) Apply(ctx *core.Context) error {
 				return
 			}
 		}
-		c.Next()
+		denyAuth(c)
 	}
 
 	// 0b. Register migrations
