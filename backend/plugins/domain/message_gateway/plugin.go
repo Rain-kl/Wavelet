@@ -59,6 +59,10 @@ func (p *Plugin) Name() string {
 func (p *Plugin) Inject() []reflect.Type {
 	return []reflect.Type{
 		reflect.TypeFor[contracts.DBService](),
+		// AuthService is captured as a middleware value in Apply, so it cannot
+		// be late-bound with core.When like the other services below; the
+		// kernel must mount auth first or the routes get a pass-through guard.
+		reflect.TypeFor[contracts.AuthService](),
 	}
 }
 

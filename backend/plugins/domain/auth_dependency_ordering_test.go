@@ -1,0 +1,153 @@
+// Copyright 2026 Arctel.net
+// SPDX-License-Identifier: Apache-2.0
+
+package domain_test
+
+import (
+	"context"
+	"reflect"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"Wavelet/core"
+	"Wavelet/core/contracts"
+	"Wavelet/core/extpoints"
+	"Wavelet/plugins/domain/message_gateway"
+	"Wavelet/plugins/domain/user"
+)
+
+// The kernel only gates a plugin's Apply on the services it DECLARES in Inject,
+// so a plugin that consumes contracts.AuthService without declaring it can be
+// mounted before auth exists. Those plugins fall back to a pass-through
+// middleware, which silently un-guards their routes.
+
+func sentinelLogin(c *gin.Context)   { c.Next() }
+func sentinelAdmin(c *gin.Context)   { c.Next() }
+func sentinelNoToken(c *gin.Context) { c.Next() }
+
+type stubAuthService struct{ contracts.AuthService }
+
+func (stubAuthService) RequireAuthMiddleware() any       { return gin.HandlerFunc(sentinelLogin) }
+func (stubAuthService) RequireAdminMiddleware() any      { return gin.HandlerFunc(sentinelAdmin) }
+func (stubAuthService) DisallowTokenAuthMiddleware() any { return gin.HandlerFunc(sentinelNoToken) }
+
+type stubDBService struct{ contracts.DBService }
+
+// providerPlugin publishes a contract into the container at Apply time, the way
+// the real infra and domain plugins do.
+type providerPlugin struct {
+	name    string
+	provide func(*core.Context) error
+}
+
+func (p providerPlugin) Name() string { return p.name }
+
+func (p providerPlugin) Apply(ctx *core.Context) error { return p.provide(ctx) }
+
+func dbProvider() core.Plugin {
+	return providerPlugin{name: "stub-database", provide: func(ctx *core.Context) error {
+		core.Provide[contracts.DBService](ctx, stubDBService{})
+		return nil
+	}}
+}
+
+func authProvider() core.Plugin {
+	return providerPlugin{name: "stub-auth", provide: func(ctx *core.Context) error {
+		core.Provide[contracts.AuthService](ctx, stubAuthService{})
+		return nil
+	}}
+}
+
+func findRoute(routes []extpoints.RouteDefinition, method, path string) (extpoints.RouteDefinition, bool) {
+	for _, rd := range routes {
+		if rd.Method == method && rd.Path == path {
+			return rd, true
+		}
+	}
+	return extpoints.RouteDefinition{}, false
+}
+
+// codePointer resolves the function code pointer of a registered handler so
+// identity can be compared without depending on gin internals.
+func codePointer(handler any) uintptr {
+	switch fn := handler.(type) {
+	case gin.HandlerFunc:
+		return reflect.ValueOf(fn).Pointer()
+	case func(*gin.Context):
+		return reflect.ValueOf(fn).Pointer()
+	default:
+		return 0
+	}
+}
+
+func assertsMiddleware(t *testing.T, routes []extpoints.RouteDefinition, method, path string, want func(*gin.Context)) {
+	t.Helper()
+
+	rd, ok := findRoute(routes, method, path)
+	if !ok {
+		t.Fatalf("route %s %s was never registered", method, path)
+	}
+	wantPtr := codePointer(gin.HandlerFunc(want))
+	for _, h := range rd.Handlers {
+		if codePointer(h) == wantPtr {
+			return
+		}
+	}
+	for _, m := range rd.Middlewares {
+		if codePointer(m) == wantPtr {
+			return
+		}
+	}
+	t.Errorf("route %s %s is not guarded by the auth middleware: handlers=%d middlewares=%d",
+		method, path, len(rd.Handlers), len(rd.Middlewares))
+}
+
+// TestRoutesMountedBeforeAuthServiceAreGuarded 回归：cmd/app.go 把 user/message_gateway
+// 注册在 auth 之前，若插件未在 Inject 中声明 contracts.AuthService，reconcile 会先
+// Apply 它们，导致鉴权中间件退化为透传闭包，路由完全不受保护。
+func TestRoutesMountedBeforeAuthServiceAreGuarded(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := core.NewContext(context.Background())
+
+	// Registration order mirrors cmd/app.go: the auth provider comes last.
+	app := core.NewApp(
+		core.WithContext(ctx),
+		core.WithPlugins(
+			dbProvider(),
+			user.New(),
+			message_gateway.New(),
+			authProvider(),
+		),
+	)
+	require.NoError(t, app.ApplyPlugins())
+
+	routes := ctx.Router().Routes()
+
+	assertsMiddleware(t, routes, "POST", "/api/v1/user/change-password", sentinelLogin)
+	assertsMiddleware(t, routes, "PUT", "/api/v1/user/profile", sentinelLogin)
+	assertsMiddleware(t, routes, "GET", "/api/v1/user/access-tokens", sentinelLogin)
+	assertsMiddleware(t, routes, "GET", "/api/v1/user/access-tokens", sentinelNoToken)
+	assertsMiddleware(t, routes, "GET", "/api/v1/message-gateway/channels", sentinelLogin)
+	assertsMiddleware(t, routes, "GET", "/api/v1/admin/message-gateway/channels", sentinelAdmin)
+}
+
+// TestAuthConsumersDeclareAuthDependency 是同一缺陷的架构面：声明依赖是内核排序的唯一
+// 依据，漏声明会让正确性取决于注册表顺序。
+func TestAuthConsumersDeclareAuthDependency(t *testing.T) {
+	want := reflect.TypeFor[contracts.AuthService]()
+	for _, tc := range []struct {
+		name string
+		deps []reflect.Type
+	}{
+		{"user", user.New().Inject()},
+		{"message_gateway", message_gateway.New().Inject()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Contains(t, tc.deps, want,
+				"%s resolves contracts.AuthService in Apply, so it must declare it in Inject", tc.name)
+		})
+	}
+}

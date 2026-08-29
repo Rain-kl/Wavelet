@@ -56,6 +56,10 @@ func (p *Plugin) Name() string {
 func (p *Plugin) Inject() []reflect.Type {
 	return []reflect.Type{
 		reflect.TypeFor[contracts.DBService](),
+		// Apply resolves AuthService to build the route auth middleware. The
+		// kernel only gates Apply on declared deps, so leaving this out lets
+		// user mount before auth and fall back to a pass-through middleware.
+		reflect.TypeFor[contracts.AuthService](),
 	}
 }
 
