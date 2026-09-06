@@ -5,7 +5,9 @@ BUILD_DATE ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 MODULE := $(shell cd backend && go list -m)
 
 swagger:
-	scripts/swagger.sh
+	# execute this first
+	# go install github.com/swaggo/swag/cmd/swag@latest
+	cd backend && swag init -o docs --parseDependency --parseInternal
 
 license:
 	scripts/update_go_license.sh

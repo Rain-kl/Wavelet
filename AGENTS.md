@@ -60,9 +60,39 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Test-Driven Development (TDD)
+
+**先写测试，再让测试逐步变绿。**
+
+所有功能开发与 Bug 修复必须遵循 TDD 节奏：
+
+1. **写失败测试**：针对目标行为编写测试，确认它在当前代码下失败（Red）。
+2. **最小实现**：只写让测试通过所需的最少代码，不超出测试范围（Green）。
+3. **重构**：在测试绿色的保护下清理代码，确保所有测试仍然通过（Refactor）。
+
+**逐步推进，不要跳步：**
+
+```
+❌ 一次写完所有实现，然后补测试
+✅ 写一个测试 → 让它变绿 → 写下一个测试 → 让它变绿 → ...
+```
+
+**测试应覆盖：**
+- 正常路径（happy path）
+- 边界条件（空值、零值、最大值）
+- 错误路径（预期失败的 case）
+
+**验证命令在提交前必须全部通过：**
+
+```bash
+go test ./...       # 后端全量测试
+make code-check     # 静态分析
+```
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
 
 ## Git 提交规范
 
@@ -76,16 +106,24 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 | `new-api` | 基于 Cordis 插件开发业务 HTTP API、通过 `ctx.Router()` 声明路由与挂载中间件 |
 | `new-async-task` | 基于 Cordis 插件通过 `ctx.Task()` 与 `ctx.Schedule()` 注册 Asynq 异步任务与定时调度 |
 | `new-setting` | 基于 Cordis 插件通过 `ctx.Settings()` 声明配置 Schema、绑定 YAML 配置或管理台热加载设置 |
-| `database-migration` | 插件自包含 `embed.FS` 独立 Goose SQL 迁移（PG/SQLite 双方言、ClickHouse 分析库） |
+| `database-guide` | 插件自包含 `embed.FS` 独立 Goose SQL 迁移（PG/SQLite 双方言、ClickHouse 分析库）；以及 ClickHouse 批量写入、`pkg/batchwriter` 接入、分析表异步 flush 与背压策略 |
 | `cache-framework` | 基于 `ctx.Cache()` 与 `contracts.CacheService` 访问三层缓存（RAM L1 + Redis L2 + Pub/Sub 同步） |
-| `logstore` | 日志/分析用途表、`internal/repository/logstore`、切换日志主库、PG/SQLite 回落 |
-| `clickhouse-batchwriter` | ClickHouse 批量写入、`internal/infra/persistence/batchwriter` 接入、分析表异步 flush 与背压策略 |
+| `logstore` | 日志/分析用途表、`plugins/domain/risk_control/logstore`、切换日志主库、PG/SQLite 回落 |
 | `file-upload` | 业务上传文件、Worker 程序化摄取、`upload.Ingest` / `contracts.StorageService`、文件访问与统计 |
 | `push-notification` | 系统通知推送事件、统一触发器投递、带消息推送的业务功能 |
+| `go-logging` | 选择日志方案、配置 slog、编写结构化日志语句、决定日志级别或为日志添加请求上下文 |
 | `release-guide` | 根据自上一正式版本 Tag 以来的提交整理 Version Bump 提交信息以触发双语 Release |
+| `code-review-skill` | 进行代码审查（Code Review）、PR 评审、代码质量与安全性审查、检查代码坏味道 |
 | `shadcn` | 添加、修改或组合 shadcn/ui 组件 |
 
 ## 严格遵循事项 (Guardrails)
+
+### 上游优先与下游合并规范 (Upstream-First)
+
+- Wavelet是一个 Cordis 微内核插件化架构的开源项目，所有框架层改动必须在上游修改并合并到下游，禁止直接在下游修改框架层代码。
+- **归属判定**：改动位于框架层（`backend/core/`、`backend/pkg/`、通用 `backend/plugins/drivers|infra|domain/`、Cordis/微内核机制）→ **必须先在上游修改**；仅下游业务（`backend/downstream/`、产品页面与业务插件）可直接在下游修改。
+- **标准流程**：上游改代码 + 补测试 + 本地 commit（禁止 push）→ 下游 `git fetch wavelet` 确认带入范围（避免拖入无关提交）→ `git merge wavelet/main` → 下游重跑相关测试验证。
+- **严禁**直接在下游修改框架层代码（会造成双源分叉、合并冲突）。若已误改，先 `git revert` 撤销下游改动，再按标准流程合并上游。
 
 - 切勿删除 `frontend/node_modules`。
 - 保持 `backend/pkg/` 绝对纯净，属于底层通用基础库，**严禁依赖项目上层包（如 `Wavelet/core/*`、`Wavelet/plugins/*`）**；保持 `backend/pkg/util/` 绝对纯净无状态，禁止导入 Gin、GORM、sessions 等 Web/数据库框架包。

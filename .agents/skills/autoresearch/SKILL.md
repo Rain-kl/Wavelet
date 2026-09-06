@@ -1,300 +1,107 @@
 ---
 name: autoresearch
-description: >
-  Autonomous goal-directed iteration loop, inspired by Karpathy's autoresearch.
-  Use when asked to run autoresearch, iterate overnight, autonomously improve
-  any measurable goal, or drive an unattended plan/ship/debug/fix/security
-  workflow. Loops forever: modify → verify → keep/revert → log → repeat.
-  Never stops until the user interrupts.
+description: "Autonomous iteration loop: modify, verify, keep/discard against any metric"
+version: 2.2.2
 ---
 
-# Autoresearch
+# Autoresearch — Autonomous Goal-directed Iteration
 
-> Ported from `supratikpm/gemini-autoresearch` (Gemini CLI). The loop protocol
-> is unchanged; only tool-specific mechanics were mapped to Qoder equivalents —
-> the `WebSearch` tool replaces Google Search grounding, `plan` / `ship` /
-> `debug` / `fix` / `security` modes replace `/autoresearch:*` subcommands, and
-> Qoder Automations replace `gemini --yolo`.
+## Safety Invariants (all subcommands)
+- Never push, publish, or deploy without explicit user approval.
+- Bounded by default. Override with `Iterations: unlimited`.
+- All results logged to `autoresearch/{subcommand}-{YYMMDD}-{HHMM}/` directory.
+- Chain handoff via `handoff.json`. Evals reads `*-results.tsv`.
 
-You are an autonomous improvement agent. You iterate forever until interrupted.
-You do not ask "should I continue?" You do not pause for confirmation. You run
-the loop.
+## Dispatch (bare `/autoresearch`)
 
-## Invocation
+Parse the invocation in this order:
 
-### Standard loop
-```
-/autoresearch
-Goal:   <what to improve — be specific>
-Scope:  <files or directories you may modify>
-Metric: <the number you are optimising, and whether higher or lower is better>
-Verify: <shell command that measures progress — must output a number in under 10s>
-Guard:  <shell command that must always pass — optional but strongly recommended>
-```
+| Condition | Mode |
+|---|---|
+| `Metric:` or `Verify:` present | **Classic** — existing metric loop, unchanged |
+| Free-form natural-language goal, no metric/verify | **Orchestrator** — see Orchestrator section |
+| Nothing | **Setup wizard** — interactive config builder |
+| `--classic` flag | Force Classic regardless of goal text |
+| `--auto` flag | Force Orchestrator regardless of goal text |
 
-`Verify` and `Guard` serve completely different purposes:
-- **Verify** = "Did the metric improve?" — measures progress toward the goal
-- **Guard** = "Did anything else break?" — protects invariants unrelated to the goal
+Print a banner on every invocation: `[autoresearch] mode: classic | orchestrator | wizard`.
 
-Example — improving test coverage while ensuring types never break:
-```
-Verify: npm test -- --coverage | grep "All files"
-Guard:  npx tsc --noEmit
-```
+## Subcommands
 
-`Verify` is required. `Guard` is optional but strongly recommended — without it,
-the loop can silently accumulate regressions in areas outside the metric.
-
-Guard files are **never modified** by the loop. They are read-only constraints.
-
-Goal, Scope, Metric, and Verify are required. Guard is optional.
-If any required fields are missing, ask for them once, then start.
-
-### Modes
-
-Invoke the skill and make the first word the mode: `autoresearch plan <goal>`,
-`autoresearch security`, and so on. Qoder does not register `/autoresearch:*`
-subcommands — the mode is plain text in your message.
-
-| Mode | What it does | Reference |
+| Command | Does | Default Iterations |
 |---|---|---|
-| `plan <goal>` | Auto-detect stack, propose goal/scope/verify, dry run, hand back ready-to-run config | `references/plan-workflow.md` |
-| `ship` | Pre-flight checklist — tests, types, lint, bundle, secrets, deps. Autoresearch loop on anything that fails | `references/ship-workflow.md` |
-| `debug <description>` | Autonomous debug loop — reproduce, isolate root cause, fix, verify, harden | `references/debug-workflow.md` |
-| `fix <description>` | Focused fix loop — for specific lint, type, or test failures without full debug isolation | `references/fix-workflow.md` |
-| `security` | STRIDE/OWASP audit loop — threat model, find vulnerabilities, optional auto-fix | `references/security-workflow.md` |
+| `/autoresearch` | Iterate against a metric: modify → verify → keep/discard | 25 |
+| `/autoresearch plan` (or `plan.md`) | Convert a goal into validated Scope, Metric, Verify config | N/A |
+| `/autoresearch debug` (or `debug.md`) | Hunt bugs: hypothesize → test → falsify → repeat | 15 |
+| `/autoresearch fix` (or `fix.md`) | Crush errors one-by-one until zero remain | 20 |
+| `/autoresearch security` (or `security.md`) | STRIDE + OWASP audit with red-team personas | 15 |
+| `/autoresearch ship` (or `ship.md`) | Ship through 8 phases: checklist → dry-run → deploy → verify | N/A |
+| `/autoresearch scenario` (or `scenario.md`) | Generate edge cases across 12 dimensions | 20 |
+| `/autoresearch predict` (or `predict.md`) | 5 expert personas debate before implementation | N/A |
+| `/autoresearch learn` (or `learn.md`) | Scout codebase → generate docs or wiki → validate → fix loop | 10 |
+| `/autoresearch reason` (or `reason.md`) | Adversarial debate with blind judges until convergence | 8 |
+| `/autoresearch probe` (or `probe.md`) | 8 personas interrogate requirements until saturation | 15 |
+| `/autoresearch improve` (or `improve.md`) | Research ICP challenges, discover improvements, generate PRDs | 15 |
+| `/autoresearch evals` (or `evals.md`) | Analyze iteration results: trends, plateaus, regressions | N/A |
+| `/autoresearch regression` (or `regression.md`) | Regression stability gate: baseline vs candidate, verdict STABLE/UNSTABLE | N/A |
 
-No mode means the standard loop above.
+## Universal Flags
 
-**When a mode is invoked**, read the corresponding reference file
-before doing anything else. The reference file contains the full protocol
-for that workflow.
+| Flag | Applies To | Purpose |
+|---|---|---|
+| `Iterations: N` | All looping | Set iteration count |
+| `Iterations: unlimited` | All looping | Opt-in unbounded |
+| `--evals` | All looping | Mid-loop checkpoints + final summary |
+| `--evals-interval N` | All looping | Override checkpoint frequency |
+| `--chain <targets>` | All | Sequential handoff after completion |
+| `--<subcommand>` | All | Shorthand for `--chain <subcommand>` |
+| `--dry-run` | Orchestrator | Print derived config + planned pipeline; no execution |
+| `--max-cycles N` | Orchestrator | Hard ceiling on orchestration cycles (default 50) |
+| `--classic` | Bare `/autoresearch` | Force Classic metric-loop mode |
+| `--auto` | Bare `/autoresearch` | Force Orchestrator mode |
 
----
+## Orchestrator
 
-## Setup phase (run once before the loop)
+Activated when a plain-language goal is given without `Metric:`/`Verify:`. Classifies the goal into a **Goal archetype** — see `references/orchestrator-routing.md` for the archetype table and router decision table.
 
-1. Read every file in Scope to build full context. Qoder compacts older turns
-   automatically, so re-read Scope files instead of trusting a stale summary.
-2. Read `autoresearch-lessons.md` if it exists. This is accumulated knowledge
-   from prior runs. Read it carefully before forming any hypothesis.
-3. Run the Verify command. Record the output as the baseline (iteration #0).
-4. If Guard is provided: run it once. If it fails, STOP immediately and tell
-   the user — the codebase is already broken before the loop starts. Fix the
-   Guard failure manually before proceeding. Guard must be green at baseline.
-5. Initialise `autoresearch-results.tsv`:
-   ```
-   iteration\tcommit\tmetric\tdelta\tstatus\tguard\tdescription
-   0\t-\t<baseline>\t0.0\tbaseline\tpass\tinitial measurement
-   ```
-6. Print a setup summary: goal, baseline metric, guard status (pass/skip),
-   scope summary, lessons loaded Y/N.
-7. Start the loop immediately. Do not wait for confirmation.
+Resolve every `scripts/...` path below relative to this installed skill directory, never relative to the caller's working directory.
 
----
+**Two modes based on archetype:**
+- **Orchestration loop** — predicate-bearing archetypes (ship-ready, optimize-metric, fix-broken, harden, build-feature, explore). Goal has a mechanical Success predicate; the loop runs until that predicate is met.
+- **Single-pass dispatch** — subjective/terminal archetypes (document, what-to-build, decide-design). Routes once to the fitting subcommand (learn / improve / reason), lets it self-terminate, then reports. No loop, no Plateau, no ship gate.
 
-## The loop (run forever — never stop)
+### Orchestration Loop Steps
 
-### Phase 1 — Review
+Backed by `scripts/orchestrate.sh` (deterministic seam — all routing logic lives there). Subcommands exposed: `classify`, `next-hop`, `units`, `plateau`, `screen-cmd`, `verdict`, `validate-state`, `screen-state-predicate`.
 
-Read:
-- Current state of all Scope files
-- `git log --oneline -20` (what has been tried)
-- `autoresearch-results.tsv` (what worked, what failed, patterns)
-- `autoresearch-lessons.md` (accumulated wisdom from prior runs)
+1. **Classify** — `scripts/orchestrate.sh classify "<goal>"` → archetype label + mode.
+2. **Derive predicate** — reuse `plan` logic to produce a concrete Success predicate: exact shell command + expected output. For `optimize-metric`, run the full plan/wizard derivation internally.
+3. **Confirm** — ONE `request_user_input` showing: archetype, mode, concrete predicate (command + expected output), terminal choice (stop-at-verified vs proceed-to-ship). Misclassifications are caught here, not mid-run.
+4. **Round-0 dry-run** — prove the predicate command runs and returns a value; safety-screen every derived command via `screen-cmd`; print projected cycle budget. Stop here if `--dry-run`.
+5. **Loop** until predicate satisfied:
+   a. Assess state via cheap signals (last `handoff.json`, regression verdict, error count) + affected-test verify.
+   b. `scripts/orchestrate.sh next-hop orchestrator-state.json` → next subcommand.
+   c. Run subcommand (its own bounded inner loop).
+   d. Record per-hop outcome ∈ {progressed, no-op, failed, blocked}.
+   e. Fold hop's `handoff.json` into `orchestrator-state.json`.
+   f. `scripts/orchestrate.sh units` → recompute **Units remaining**.
+6. **Stop conditions** (checked after each hop):
+   - Predicate met → ship gate (only if ship is in the pipeline) else `CONVERGED`.
+   - `scripts/orchestrate.sh plateau orchestrator-state.json` → true → stop + report `PLATEAU`.
+   - Cycles > ceiling (default 50, override `--max-cycles N`) → stop + report `CEILING`.
+   - Hop outcome `blocked`/`failed` with no alternative route → checkpoint + stop + report `BLOCKED`.
 
-Identify: what directions have produced gains? what has consistently failed?
-what has not been tried yet?
+### Orchestrator State
 
-### Phase 2 — Ideate
+`orchestrator-state.json` — orchestrator-owned, additive. Tracks: goal, archetype, predicate, terminal-choice, `units_remaining` history, cycle count, per-hop pipeline log with outcomes, current incumbent. Each hop's `handoff.json` is unchanged (single-hop bridge); the orchestrator reads it and folds it in. Two clearly-owned state objects, no overlap.
 
-Pick ONE hypothesis. It must be:
-- Specific and testable in a single iteration
-- Meaningfully different from the last 3 attempts
-- Informed by both the results log and the lessons file
-- Explained in one sentence
+### Orchestrator Safety Invariants
 
-Prefer hypotheses that build on proven wins over untested territory.
-Prefer simplicity — a small clean change beats a large complex one.
-
-### Phase 3 — Modify
-
-Make exactly ONE atomic change in Scope. If you cannot explain the change
-in one sentence, split it into two separate iterations.
-
-Do not touch files outside Scope. Do not refactor unrelated code. One thing.
-
-### Phase 4 — Commit
-
-```bash
-git add -A && git commit -m "autoresearch iter N: <one-sentence description>"
-```
-
-**Commit BEFORE verifying.** This guarantees a clean, known-good rollback point
-regardless of what verification reveals. Never skip this step.
-
-### Phase 5 — Verify + Guard
-
-**Step A — Run Verify.** Extract the numeric metric value.
-
-If Verify crashed (exit non-zero, no number output):
-- Attempt to fix the crash (max 3 tries)
-- If unfixed: `git revert HEAD --no-edit`, log as "crash", go to Phase 8
-
-If Verify regressed or is unchanged:
-- `git revert HEAD --no-edit`, log as "discard", go to Phase 8
-- Do NOT run Guard — a regressed change is already dead
-
-**Step B — Run Guard (only if Verify improved).** Exit code 0 = pass.
-
-**Web research supplement**: after Verify passes, use `WebSearch` for
-additional signal when local scripts cannot capture full quality.
-See `references/web-research-patterns.md`. Research is a supplement only.
-
-### Phase 6 — Decide
-
-The full dual-gate decision table:
-
-| Verify | Guard | Decision | Log status |
-|---|---|---|---|
-| ✅ improved | ✅ pass (or no Guard set) | **KEEP** | `keep` |
-| ✅ improved | ❌ fail | **REWORK** — fix Guard failure, re-run Guard (max 2 attempts). If still failing: `git revert HEAD --no-edit` | `guard-fail` |
-| ❌ regressed | — | **REVERT** immediately. Do not run Guard. | `discard` |
-| ❌ unchanged | — | **REVERT**. Treat unchanged as a regression. | `discard` |
-| 💥 crashed | — | **FIX** (max 3 attempts), then revert if unfixed. | `crash` |
-
-**Rework protocol** (when Verify passes but Guard fails):
-1. Read the Guard failure output carefully
-2. Make the minimal additional change to satisfy Guard without hurting Verify
-3. Amend the commit: `git add -A && git commit --amend --no-edit`
-4. Re-run both Verify AND Guard
-5. If both pass → KEEP. If Guard still fails after 2 rework attempts → REVERT.
-
-### Phase 7 — Log
-
-Append one row to `autoresearch-results.tsv`:
-
-```
-<N>\t<commit_sha or "-">\t<metric_value>\t<delta>\t<keep|discard|guard-fail|crash>\t<guard:pass|fail|skip>\t<description>
-```
-
-Delta = metric_value − previous_best (positive = improvement for "higher is
-better" goals, negative = improvement for "lower is better" goals).
-
-### Phase 8 — Repeat
-
-Go to Phase 1. Immediately. NEVER STOP.
-
----
-
-## Progress summary (every 10 iterations)
-
-Print this, then continue immediately:
-
-```
-=== Autoresearch progress — iteration N ===
-Baseline:     <value>
-Current best: <value> (<delta> from baseline)
-Keeps:        <count>
-Discards:     <count>
-Crashes:      <count>
-Top pattern:  <what has worked most consistently>
-Last 5:       <keep/discard/crash sequence>
-===
-```
-
----
-
-## Lessons system
-
-After every 5 KEPT iterations, append to `autoresearch-lessons.md`:
-
-```markdown
-## Lesson <N> — iterations <range>
-**Pattern**: <what change type produced gains>
-**Why it worked**: <mechanistic hypothesis>
-**Conditions**: <when to apply — be specific about codebase state>
-**Anti-pattern**: <what failed when trying similar things>
-**Metric delta**: <how much the metric moved, cumulative>
-```
-
-At the start of every run, read this file before forming any hypotheses.
-Weight recent lessons more heavily. Older lessons may not apply if the
-codebase or scope has changed significantly.
-
-This is the compounding mechanism. Each overnight run starts smarter than
-the last.
-
----
-
-## Stuck recovery
-
-After 5 consecutive discards or crashes:
-
-1. Re-read all Scope files from scratch. Full context, not memory.
-2. Search the lessons log for near-misses — what came closest to working?
-3. Try combining two near-miss approaches into one hypothesis.
-4. If still stuck after 3 more iterations: try the literal opposite of what
-   has been failing consistently.
-5. If still stuck after 3 more: use `WebSearch` to research the
-   problem space. Search for `[domain] [metric] improvement techniques [year]`.
-   Extract 3 concrete techniques. Use each as the next 3 hypotheses.
-6. If still stuck after all of the above: log a "stuck" event, note the wall
-   hit, and try a completely different direction. Some local optima require
-   architectural changes — note this for the human.
-
----
-
-## Unattended / overnight mode
-
-The one thing that stalls a loop is a permission prompt. Run it in a session
-that auto-approves edits and shell, or it will wait for you every iteration.
-
-To start it while you are away, create a Qoder Automation whose prompt is fully
-self-contained — automation conversations never see this transcript:
-
-> Read the `autoresearch` skill and start immediately. Goal: `<goal>`.
-> Scope: `<scope>`. Metric: `<metric — higher/lower is better>`.
-> Verify: `<command>`. Guard: `<command>`. Do not pause, do not ask questions,
-> iterate until stopped.
-
-You will wake up to `autoresearch-results.tsv` and `autoresearch-lessons.md`.
-Note that a scheduled run cannot be interrupted the way a live session can, so
-bound it — a Guard that vetoes, and a scope you would trust unattended.
-
----
-
-## Non-negotiable rules
-
-1. **NEVER STOP** until the user manually interrupts the run.
-2. **ONE change per iteration** — atomic, explainable in one sentence.
-3. **Mechanical verification only** — no "looks better", no "seems cleaner".
-   If you cannot measure it, you cannot use it as a signal.
-4. **Commit BEFORE verifying** — always. No exceptions.
-5. **Auto-revert on regression** — no debate, no "let me try one more thing".
-6. **Guard is a hard veto** — Verify passing does not mean KEEP. Guard must also pass.
-7. **Never modify Guard files** — they are read-only invariants, not scope.
-8. **Read git history before every hypothesis** — it is your short-term memory.
-9. **Read lessons before every run** — it is your long-term memory.
-10. **Simplicity wins ties** — equal metric + less code = KEEP.
-11. **Never touch files outside Scope** — discipline is what makes the loop safe.
-12. **When in doubt, make the smaller change** — scope creep kills iterations.
-
----
-
-## Reference files
-
-**Core loop**
-- `references/loop-protocol.md` — detailed phase-by-phase protocol
-- `references/results-logging.md` — TSV format, summary templates, examples
-- `references/lessons-system.md` — cross-run memory and compounding
-
-**Web research**
-- `references/web-research-patterns.md` — `WebSearch` supplement patterns
-
-**Mode workflows**
-- `references/plan-workflow.md` — `plan` mode — auto-detect and configure
-- `references/ship-workflow.md` — `ship` mode — pre-flight checklist
-- `references/debug-workflow.md` — `debug` mode — root cause and fix
-- `references/fix-workflow.md` — `fix` mode — focused type/lint fix
-- `references/security-workflow.md` — `security` mode — STRIDE/OWASP audit
+- **Never auto-approve ship/deploy/push.** The orchestrator never passes `--auto` to `ship`; deploy always requires explicit user approval.
+- **Data-migration behind anchored DB-URL allowlist.** Reuses regression's allowlist — host must be `localhost`/`127.0.0.1`/container hostname, or database name carries `_test`/`_ci` suffix. Bare substring match does not qualify. Anything else refused.
+- **screen-cmd on every derived command** — run before the loop starts AND on every command read from a persisted state file on resume. Persisted commands are never trusted; resume re-screens the pinned predicate via `screen-state-predicate` and refuses on `refuse`.
+- **No un-screened commands mid-loop.** The autonomous loop cannot introduce new shell commands that bypass `screen-cmd`.
+- **Predicate pinned, not re-derived.** Round-0 writes the derived Success predicate verbatim into `orchestrator-state.json`; every cycle and every resume reuses that exact string so "done" is reproducible across runs.
+- **Validate the ledger before routing.** `validate-state` gates `orchestrator-state.json` (required fields + coarse types); a malformed ledger is not trusted to route from.
+- **Independent verify before convergence.** High-impact changes accepted on the working signal set `pending_verify`; `next-hop` routes to a `verify` hop (held-out / adversarial check) before `DONE` or ship. The verify hop never auto-approves ship.
+- **Unknown-units cycles excluded from Plateau counter.** A cycle where `units` returns `unknown` (e.g. runner crash) is not counted as zero-progress; repeated `unknown` routes to `BLOCKED`.
